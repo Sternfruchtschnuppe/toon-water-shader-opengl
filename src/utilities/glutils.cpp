@@ -34,3 +34,27 @@ unsigned int generateBuffer(Mesh &mesh) {
 
     return vaoID;
 }
+
+unsigned int generateBuffer2(Mesh &mesh){
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    generateAttribute(0, 3, mesh.vertices, false);
+    generateAttribute(1, 3, mesh.normals, true);
+    generateAttribute(2, 2, mesh.textureCoordinates, false);
+    
+    GLuint eboIndices;
+    glGenBuffers(1, &eboIndices);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboIndices);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(unsigned int), mesh.indices.data(), GL_STATIC_DRAW);
+
+    // Clean up (unbind VAO, VBOs, and EBO)
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    
+    return vao;
+}
+
+

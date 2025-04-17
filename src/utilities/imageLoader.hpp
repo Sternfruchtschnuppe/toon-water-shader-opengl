@@ -11,3 +11,4 @@ typedef struct PNGImage {
 } PNGImage;
 
 PNGImage loadPNGFile(std::string fileName);
+

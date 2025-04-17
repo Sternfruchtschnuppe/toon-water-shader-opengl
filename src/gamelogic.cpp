@@ -8,6 +8,7 @@
 #include <utilities/timeutils.h>
 #include <utilities/mesh.h>
 #include <utilities/shapes.h>
+#include <utilities/parser.h>
 #include <utilities/glutils.h>
 #include <SFML/Audio/Sound.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -21,135 +22,393 @@
 #include "utilities/imageLoader.hpp"
 #include "utilities/glfont.h"
 
-enum KeyFrameAction {
-    BOTTOM, TOP
-};
-
-#include <timestamps.h>
-
-double padPositionX = 0;
-double padPositionZ = 0;
-
-unsigned int currentKeyFrame = 0;
-unsigned int previousKeyFrame = 0;
-
 SceneNode* rootNode;
-SceneNode* boxNode;
-SceneNode* ballNode;
-SceneNode* padNode;
+SceneNode* lightNode;
+SceneNode* cameraNode;
+std::vector<SceneNode*> scenes;
 
-double ballRadius = 3.0f;
+glm::mat4 projection;
 
 // These are heap allocated, because they should not be initialised at the start of the program
-sf::SoundBuffer* buffer;
 Gloom::Shader* shader;
-sf::Sound* sound;
+Gloom::Shader* depthShader;
 
-const glm::vec3 boxDimensions(180, 90, 90);
-const glm::vec3 padDimensions(30, 3, 40);
-
-glm::vec3 ballPosition(0, ballRadius + padDimensions.y, boxDimensions.z / 2);
-glm::vec3 ballDirection(1, 1, 0.2f);
-
-CommandLineOptions options;
-
-bool hasStarted        = false;
-bool hasLost           = false;
-bool jumpedToNextFrame = false;
-bool isPaused          = false;
+int currentScene = 0;
+int currentAttribute = 0;
 
 bool mouseLeftPressed   = false;
 bool mouseLeftReleased  = false;
 bool mouseRightPressed  = false;
 bool mouseRightReleased = false;
 
-// Modify if you want the music to start further on in the track. Measured in seconds.
-const float debug_startTime = 0;
-double totalElapsedTime = debug_startTime;
-double gameElapsedTime = debug_startTime;
+double totalElapsedTime = 0;
+float nearPlane = 0.1f;
+float farPlane = 50.0f;
 
-double mouseSensitivity = 1.0;
-double lastMouseX = windowWidth / 2;
-double lastMouseY = windowHeight / 2;
+GLuint ssaoDepthTextureID;
+GLuint ssaoFramebufferID;
+
+GLuint mv_pos;
+GLuint proj_pos;
+GLuint norm_pos;
+GLuint ldir_pos;
+GLuint time_pos;
+GLuint depthTexture_pos;
+GLuint width_pos;
+GLuint height_pos;
+GLuint isWater_pos;
+GLuint mainColor_pos;
+GLuint secondaryColor_pos;
+GLuint textureID_pos;
+
+GLuint animateWater_pos;
+GLuint notRenderDepth_pos;
+GLuint distortion_pos;
+GLuint notDistortAboveObjects_pos;
+GLuint waterDepth_pos;
+GLuint posterizeWater_pos;
+GLuint foam_pos;
+GLuint waterSpec_pos;
+GLuint colorWaveHeight_pos;
+GLuint smoothDiff_pos;
+GLuint specular_pos;
+GLuint rim_pos;
+
+//depth shader
+GLuint mv_depth_pos;
+GLuint proj_depth_pos;
+
+//shader settings
+bool animateWater = true;
+bool notRenderDepth = true;
+bool distortion = true;
+bool notDistortAboveObjects = true;
+bool waterDepth = true;
+bool posterizeWater = true;
+bool foam = true;
+bool waterSpec = true;
+bool colorWaveHeight = true;
+bool smoothDiff = true;
+bool specular = true;
+bool rim = true;
+
+double mouseSensitivity = 10.0;
 void mouseCallback(GLFWwindow* window, double x, double y) {
-    int windowWidth, windowHeight;
-    glfwGetWindowSize(window, &windowWidth, &windowHeight);
-    glViewport(0, 0, windowWidth, windowHeight);
+    int width, height;
+    glfwGetWindowSize(window, &width, &height);
+    glViewport(0, 0, width, height);
 
-    double deltaX = x - lastMouseX;
-    double deltaY = y - lastMouseY;
+    double deltaX = x - width / 2;
+    double deltaY = y - height / 2;
 
-    padPositionX -= mouseSensitivity * deltaX / windowWidth;
-    padPositionZ -= mouseSensitivity * deltaY / windowHeight;
 
-    if (padPositionX > 1) padPositionX = 1;
-    if (padPositionX < 0) padPositionX = 0;
-    if (padPositionZ > 1) padPositionZ = 1;
-    if (padPositionZ < 0) padPositionZ = 0;
-
-    glfwSetCursorPos(window, windowWidth / 2, windowHeight / 2);
-}
-
-//// A few lines to help you if you've never used c++ structs
-// struct LightSource {
-//     bool a_placeholder_value;
-// };
-// LightSource lightSources[/*Put number of light sources you want here*/];
-
-void initGame(GLFWwindow* window, CommandLineOptions gameOptions) {
-    buffer = new sf::SoundBuffer();
-    if (!buffer->loadFromFile("../res/Hall of the Mountain King.ogg")) {
-        return;
+    if (mouseLeftPressed || mouseRightPressed){   
+        rootNode->rotation += glm::vec3(0, mouseSensitivity * deltaX / width, 0);
+        cameraNode->rotation += glm::vec3(mouseSensitivity * deltaY / height, 0, 0);
     }
 
-    options = gameOptions;
+    glfwSetCursorPos(window, width / 2, height / 2);
+}
 
+void cycleAttribute(int diff){
+    currentAttribute += diff;
+    if(currentScene == 0){        
+        currentAttribute = currentAttribute < 0 ? 3 : currentAttribute % 4;
+        smoothDiff = currentAttribute > 0;
+        specular = currentAttribute > 1;
+        rim = currentAttribute > 2;
+    }else if (currentScene == 1) {
+        currentAttribute = currentAttribute < 0 ? 8 : currentAttribute % 9;
+        animateWater = currentAttribute > 6;
+        notRenderDepth = currentAttribute != 1;
+        distortion = currentAttribute > 4;
+        notDistortAboveObjects = currentAttribute > 5;
+        waterDepth = currentAttribute > 1;
+        posterizeWater = currentAttribute > 2;
+        foam = currentAttribute > 3;
+        waterSpec = currentAttribute > 7;
+        colorWaveHeight = currentAttribute > 6;
+    }
+}
+
+void cycleScene(int delta){
+    currentScene = (currentScene + delta) % scenes.size();
+    currentAttribute = 0;
+    for(auto scene : scenes){
+        scene->active = false;
+    }
+    scenes[currentScene]->active = true;
+
+    animateWater = false;
+    notRenderDepth = true;
+    distortion = false;
+    notDistortAboveObjects = false;
+    waterDepth = false;
+    posterizeWater = false;
+    foam = false;
+    waterSpec = false;
+    colorWaveHeight = false;
+    smoothDiff = false;
+    specular = false;
+    rim = false;
+    if(currentScene == 1){
+        smoothDiff = true;
+        specular = true;
+        rim = true;
+    }
+    else if(currentScene == 2){
+        animateWater = true;
+        notRenderDepth = true;
+        distortion = true;
+        notDistortAboveObjects = true;
+        waterDepth = true;
+        posterizeWater = true;
+        foam = true;
+        waterSpec = true;
+        colorWaveHeight = true;
+        smoothDiff = true;
+        specular = true;
+        rim = true;
+    }
+}
+
+void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (action == GLFW_PRESS) {
+        if (key == GLFW_KEY_LEFT) {
+            cycleScene(-1);
+        } else if (key == GLFW_KEY_RIGHT) {
+            cycleScene(1);
+        }
+        else if (key == GLFW_KEY_UP) {
+            cycleAttribute(1);
+        }
+        else if (key == GLFW_KEY_DOWN) {
+            cycleAttribute(-1);
+        }
+
+    }
+}
+
+void createScenes(){
+    Mesh sphere = generateSphere(1.0, 40, 40);
+    Mesh surface = parseFileToMesh("surface.obj");
+    Mesh ground = parseFileToMesh("ground_hole.obj");
+    Mesh pirateShipSail = parseFileToMesh("pirate_ship_sail.obj");
+    Mesh pirateShipBase = parseFileToMesh("pirate_ship_base.obj");
+    Mesh pirateShipBase2 = parseFileToMesh("pirate_ship_base2.obj");
+    Mesh birds = parseFileToMesh("birds.obj");
+    Mesh isle = parseFileToMesh("isle.obj");
+    Mesh palms = parseFileToMesh("palms.obj");
+    Mesh palms1 = parseFileToMesh("palms1.obj");
+    Mesh text = parseFileToMesh("text.obj");
+
+    unsigned int sphereVAO = generateBuffer(sphere);
+    unsigned int surfaceVAO = generateBuffer2(surface);
+    unsigned int groundVAO = generateBuffer2(ground);
+    unsigned int pirateShipSailVAO = generateBuffer2(pirateShipSail);
+    unsigned int pirateShipBaseVAO = generateBuffer2(pirateShipBase);
+    unsigned int pirateShipBase2VAO = generateBuffer2(pirateShipBase2);
+    unsigned int birdsVAO = generateBuffer2(birds);
+    unsigned int isleVAO = generateBuffer2(isle);
+    unsigned int palmsVAO = generateBuffer2(palms);
+    unsigned int palms1VAO = generateBuffer2(palms1);
+    unsigned int textVAO = generateBuffer2(text);
+
+    cameraNode = createSceneNode();
+    rootNode = createSceneNode();
+
+    cameraNode->children.push_back(rootNode);
+    lightNode = createSceneNode();
+
+    cameraNode->rotation = glm::vec3(0.5, 0, 0);
+    rootNode->position = glm::vec3(0, -2, -4);
+    lightNode->position = glm::vec3(.4, 1, .4);
+    
+    //Scene1
+    SceneNode* scene1 = createSceneNode();
+    scenes.push_back(scene1);
+    SceneNode* s1_sphere = createSceneNode();
+    rootNode->children.push_back(scene1);
+    scene1->children.push_back(s1_sphere);
+    s1_sphere->vertexArrayObjectID = sphereVAO;
+    s1_sphere->VAOIndexCount       = sphere.indices.size();
+    s1_sphere->material.mainColor = {0.416, 0.988, 0.165};
+
+    //Scene3
+    SceneNode* scene3 = createSceneNode();
+    scenes.push_back(scene3);
+    rootNode->children.push_back(scene3);
+
+    glm::vec3 shipPos = {.8, -0.7, 0};
+    glm::vec3 shipScl = glm::vec3(1.2);
+    SceneNode* s3_ship_sail = createSceneNode();
+    scene3->children.push_back(s3_ship_sail);
+    s3_ship_sail->vertexArrayObjectID = pirateShipSailVAO;
+    s3_ship_sail->VAOIndexCount       = pirateShipSail.indices.size();
+    s3_ship_sail->material.mainColor = glm::vec3(.2);
+    s3_ship_sail->position = shipPos;
+    s3_ship_sail->scale = shipScl;
+
+    SceneNode* s3_ship_base = createSceneNode();
+    scene3->children.push_back(s3_ship_base);
+    s3_ship_base->vertexArrayObjectID = pirateShipBaseVAO;
+    s3_ship_base->VAOIndexCount       = pirateShipBase.indices.size();
+    s3_ship_base->material.mainColor = {0.541, 0.243, 0.043};
+    s3_ship_base->position = shipPos;
+    s3_ship_base->scale = shipScl;
+
+    SceneNode* s3_ship_base2 = createSceneNode();
+    scene3->children.push_back(s3_ship_base2);
+    s3_ship_base2->vertexArrayObjectID = pirateShipBase2VAO;
+    s3_ship_base2->VAOIndexCount       = pirateShipBase2.indices.size();
+    s3_ship_base2->material.mainColor = {1, 0.871, 0.565};
+    s3_ship_base2->position = shipPos;
+    s3_ship_base2->scale = shipScl;
+
+    SceneNode* s3_birds = createSceneNode();
+    scene3->children.push_back(s3_birds);
+    s3_birds->vertexArrayObjectID = birdsVAO;
+    s3_birds->VAOIndexCount       = birds.indices.size();
+    s3_birds->material.mainColor = {.8, .8, .8};
+    s3_birds->position = shipPos;
+    s3_birds->scale = shipScl;
+
+    SceneNode* s3_isle = createSceneNode();
+    scene3->children.push_back(s3_isle);
+    s3_isle->vertexArrayObjectID = isleVAO;
+    s3_isle->VAOIndexCount       = isle.indices.size();
+    s3_isle->scale = {4,4,4};
+    s3_isle->material.mainColor = {1, 0.914, 0.498};
+
+    SceneNode* s3_palms = createSceneNode();
+    scene3->children.push_back(s3_palms);
+    s3_palms->vertexArrayObjectID = palmsVAO;
+    s3_palms->VAOIndexCount       = palms.indices.size();
+    s3_palms->scale = {4,4,4};
+    s3_palms->material.mainColor = {0.722, 0.463, 0.137};
+
+    SceneNode* s3_palms1 = createSceneNode();
+    scene3->children.push_back(s3_palms1);
+    s3_palms1->vertexArrayObjectID = palms1VAO;
+    s3_palms1->VAOIndexCount       = palms1.indices.size();
+    s3_palms1->scale = {4,4,4};
+    s3_palms1->material.mainColor = {0.369, 0.769, 0.169};
+
+    SceneNode* s3_text = createSceneNode();
+    scene3->children.push_back(s3_text);
+    s3_text->vertexArrayObjectID = textVAO;
+    s3_text->VAOIndexCount       = text.indices.size();
+    s3_text->position = {2,-.6,0};
+    s3_text->rotation = {0, 0, glm::radians(60.0)};
+    s3_text->material.mainColor = {.7,.7,.7};
+
+    SceneNode* s3_surface = createSceneNode();
+    scene3->children.push_back(s3_surface);
+    s3_surface->vertexArrayObjectID = surfaceVAO;
+    s3_surface->VAOIndexCount = surface.indices.size();
+    s3_surface->position = {0,-0.4,0};
+    s3_surface->scale = {5, 1, 5};
+    s3_surface->material = {{0.129, 0.082, 0.89}, {0.333, 0.965, 1}};
+    s3_surface->nodeType = WATER;
+}
+
+void initGame(GLFWwindow* window) {
+    int width, height;
+    glfwGetWindowSize(window, &width, &height);
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
     glfwSetCursorPosCallback(window, mouseCallback);
-
+    glfwSetKeyCallback(window, keyCallback);
     shader = new Gloom::Shader();
     shader->makeBasicShader("../res/shaders/simple.vert", "../res/shaders/simple.frag");
-    shader->activate();
+    depthShader = new Gloom::Shader();
+    depthShader->makeBasicShader("../res/shaders/depth.vert", "../res/shaders/depth.frag");
 
-    // Create meshes
-    Mesh pad = cube(padDimensions, glm::vec2(30, 40), true);
-    Mesh box = cube(boxDimensions, glm::vec2(90), true, true);
-    Mesh sphere = generateSphere(1.0, 40, 40);
+    mv_pos = shader->getUniformFromName("modelview");
+    proj_pos = shader->getUniformFromName("projection");
+    norm_pos = shader->getUniformFromName("normal");
+    ldir_pos = shader->getUniformFromName("lightDir");
+    time_pos = shader->getUniformFromName("time");
+    depthTexture_pos = shader->getUniformFromName("depthTexture");
+    width_pos = shader->getUniformFromName("width");
+    height_pos = shader->getUniformFromName("height");
+    isWater_pos = shader->getUniformFromName("isWater");
+    mainColor_pos = shader->getUniformFromName("mainColor");
+    secondaryColor_pos = shader->getUniformFromName("secondaryColor");
+    textureID_pos = shader->getUniformFromName("textureID");
 
-    // Fill buffers
-    unsigned int ballVAO = generateBuffer(sphere);
-    unsigned int boxVAO  = generateBuffer(box);
-    unsigned int padVAO  = generateBuffer(pad);
+    animateWater_pos = shader->getUniformFromName("animateWater");
+    notRenderDepth_pos = shader->getUniformFromName("notRenderDepth");
+    distortion_pos = shader->getUniformFromName("distortion");
+    notDistortAboveObjects_pos = shader->getUniformFromName("notDistortAboveObjects");
+    waterDepth_pos = shader->getUniformFromName("waterDepth");
+    posterizeWater_pos = shader->getUniformFromName("posterizeWater");
+    foam_pos = shader->getUniformFromName("foam");
+    waterSpec_pos = shader->getUniformFromName("waterSpec");
+    colorWaveHeight_pos = shader->getUniformFromName("colorWaveHeight");
+    smoothDiff_pos = shader->getUniformFromName("smoothDiff");
+    specular_pos = shader->getUniformFromName("specular");
+    rim_pos = shader->getUniformFromName("rim");
 
-    // Construct scene
-    rootNode = createSceneNode();
-    boxNode  = createSceneNode();
-    padNode  = createSceneNode();
-    ballNode = createSceneNode();
+    proj_depth_pos = depthShader->getUniformFromName("mvp");
+    
+    initDepthTexture(window);
+    loadTextures();
+    
+    createScenes();
+    cycleScene(1);
+    cycleAttribute(-1);
+}
 
-    rootNode->children.push_back(boxNode);
-    rootNode->children.push_back(padNode);
-    rootNode->children.push_back(ballNode);
+void initDepthTexture(GLFWwindow* window) {
+    glDepthRange(0.0, 1.0);
+    int width, height;
+    glfwGetWindowSize(window, &width, &height);
 
-    boxNode->vertexArrayObjectID  = boxVAO;
-    boxNode->VAOIndexCount        = box.indices.size();
+    glGenFramebuffers(1, &ssaoFramebufferID);
+    glBindFramebuffer(GL_FRAMEBUFFER, ssaoFramebufferID);
 
-    padNode->vertexArrayObjectID  = padVAO;
-    padNode->VAOIndexCount        = pad.indices.size();
+    glGenTextures(1, &ssaoDepthTextureID);
+    glBindTexture(GL_TEXTURE_2D, ssaoDepthTextureID);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
 
-    ballNode->vertexArrayObjectID = ballVAO;
-    ballNode->VAOIndexCount       = sphere.indices.size();
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    // Attach depth textureID to framebuffer
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, ssaoDepthTextureID, 0);
 
+    // Check framebuffer completeness
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cout << "Framebuffer is not complete!" << std::endl;
+    }
 
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
 
+void loadTextures(){
+    int texCnt = 4;
+    GLuint textureID[texCnt];
+    std::string paths[texCnt] = {"noiseTexture.png", "flag.png", "Z_kai_main1.png", "Z_kai_main5.png"};
+    glGenTextures(texCnt, textureID);
 
+    for (int i = 0; i < texCnt; ++i){
+        PNGImage img = loadPNGFile("../res/textures/" + paths[i]);
+        glActiveTexture(GL_TEXTURE1 + i);
+        glBindTexture(GL_TEXTURE_2D, textureID[i]);
 
-    getTimeDeltaSeconds();
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT); 
 
-    std::cout << fmt::format("Initialized scene with {} SceneNodes.", totalChildren(rootNode)) << std::endl;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, img.width, img.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, img.pixels.data());
 
-    std::cout << "Ready. Click to start!" << std::endl;
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        glBindTextureUnit(1 + i, textureID[i]);
+    }
 }
 
 void updateFrame(GLFWwindow* window) {
@@ -157,17 +416,7 @@ void updateFrame(GLFWwindow* window) {
 
     double timeDelta = getTimeDeltaSeconds();
 
-    const float ballBottomY = boxNode->position.y - (boxDimensions.y/2) + ballRadius + padDimensions.y;
-    const float ballTopY    = boxNode->position.y + (boxDimensions.y/2) - ballRadius;
-    const float BallVerticalTravelDistance = ballTopY - ballBottomY;
-
-    const float cameraWallOffset = 30; // Arbitrary addition to prevent ball from going too much into camera
-
-    const float ballMinX = boxNode->position.x - (boxDimensions.x/2) + ballRadius;
-    const float ballMaxX = boxNode->position.x + (boxDimensions.x/2) - ballRadius;
-    const float ballMinZ = boxNode->position.z - (boxDimensions.z/2) + ballRadius;
-    const float ballMaxZ = boxNode->position.z + (boxDimensions.z/2) - ballRadius - cameraWallOffset;
-
+    //input handling
     if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1)) {
         mouseLeftPressed = true;
         mouseLeftReleased = false;
@@ -175,6 +424,7 @@ void updateFrame(GLFWwindow* window) {
         mouseLeftReleased = mouseLeftPressed;
         mouseLeftPressed = false;
     }
+
     if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_2)) {
         mouseRightPressed = true;
         mouseRightReleased = false;
@@ -182,163 +432,18 @@ void updateFrame(GLFWwindow* window) {
         mouseRightReleased = mouseRightPressed;
         mouseRightPressed = false;
     }
+    
+    totalElapsedTime += timeDelta;
 
-    if(!hasStarted) {
-        if (mouseLeftPressed) {
-            if (options.enableMusic) {
-                sound = new sf::Sound();
-                sound->setBuffer(*buffer);
-                sf::Time startTime = sf::seconds(debug_startTime);
-                sound->setPlayingOffset(startTime);
-                sound->play();
-            }
-            totalElapsedTime = debug_startTime;
-            gameElapsedTime = debug_startTime;
-            hasStarted = true;
-        }
+    int width, height;
+    glfwGetWindowSize(window, &width, &height);
 
-        ballPosition.x = ballMinX + (1 - padPositionX) * (ballMaxX - ballMinX);
-        ballPosition.y = ballBottomY;
-        ballPosition.z = ballMinZ + (1 - padPositionZ) * ((ballMaxZ+cameraWallOffset) - ballMinZ);
-    } else {
-        totalElapsedTime += timeDelta;
-        if(hasLost) {
-            if (mouseLeftReleased) {
-                hasLost = false;
-                hasStarted = false;
-                currentKeyFrame = 0;
-                previousKeyFrame = 0;
-            }
-        } else if (isPaused) {
-            if (mouseRightReleased) {
-                isPaused = false;
-                if (options.enableMusic) {
-                    sound->play();
-                }
-            }
-        } else {
-            gameElapsedTime += timeDelta;
-            if (mouseRightReleased) {
-                isPaused = true;
-                if (options.enableMusic) {
-                    sound->pause();
-                }
-            }
-            // Get the timing for the beat of the song
-            for (unsigned int i = currentKeyFrame; i < keyFrameTimeStamps.size(); i++) {
-                if (gameElapsedTime < keyFrameTimeStamps.at(i)) {
-                    continue;
-                }
-                currentKeyFrame = i;
-            }
-
-            jumpedToNextFrame = currentKeyFrame != previousKeyFrame;
-            previousKeyFrame = currentKeyFrame;
-
-            double frameStart = keyFrameTimeStamps.at(currentKeyFrame);
-            double frameEnd = keyFrameTimeStamps.at(currentKeyFrame + 1); // Assumes last keyframe at infinity
-
-            double elapsedTimeInFrame = gameElapsedTime - frameStart;
-            double frameDuration = frameEnd - frameStart;
-            double fractionFrameComplete = elapsedTimeInFrame / frameDuration;
-
-            double ballYCoord;
-
-            KeyFrameAction currentOrigin = keyFrameDirections.at(currentKeyFrame);
-            KeyFrameAction currentDestination = keyFrameDirections.at(currentKeyFrame + 1);
-
-            // Synchronize ball with music
-            if (currentOrigin == BOTTOM && currentDestination == BOTTOM) {
-                ballYCoord = ballBottomY;
-            } else if (currentOrigin == TOP && currentDestination == TOP) {
-                ballYCoord = ballBottomY + BallVerticalTravelDistance;
-            } else if (currentDestination == BOTTOM) {
-                ballYCoord = ballBottomY + BallVerticalTravelDistance * (1 - fractionFrameComplete);
-            } else if (currentDestination == TOP) {
-                ballYCoord = ballBottomY + BallVerticalTravelDistance * fractionFrameComplete;
-            }
-
-            // Make ball move
-            const float ballSpeed = 60.0f;
-            ballPosition.x += timeDelta * ballSpeed * ballDirection.x;
-            ballPosition.y = ballYCoord;
-            ballPosition.z += timeDelta * ballSpeed * ballDirection.z;
-
-            // Make ball bounce
-            if (ballPosition.x < ballMinX) {
-                ballPosition.x = ballMinX;
-                ballDirection.x *= -1;
-            } else if (ballPosition.x > ballMaxX) {
-                ballPosition.x = ballMaxX;
-                ballDirection.x *= -1;
-            }
-            if (ballPosition.z < ballMinZ) {
-                ballPosition.z = ballMinZ;
-                ballDirection.z *= -1;
-            } else if (ballPosition.z > ballMaxZ) {
-                ballPosition.z = ballMaxZ;
-                ballDirection.z *= -1;
-            }
-
-            if(options.enableAutoplay) {
-                padPositionX = 1-(ballPosition.x - ballMinX) / (ballMaxX - ballMinX);
-                padPositionZ = 1-(ballPosition.z - ballMinZ) / ((ballMaxZ+cameraWallOffset) - ballMinZ);
-            }
-
-            // Check if the ball is hitting the pad when the ball is at the bottom.
-            // If not, you just lost the game! (hehe)
-            if (jumpedToNextFrame && currentOrigin == BOTTOM && currentDestination == TOP) {
-                double padLeftX  = boxNode->position.x - (boxDimensions.x/2) + (1 - padPositionX) * (boxDimensions.x - padDimensions.x);
-                double padRightX = padLeftX + padDimensions.x;
-                double padFrontZ = boxNode->position.z - (boxDimensions.z/2) + (1 - padPositionZ) * (boxDimensions.z - padDimensions.z);
-                double padBackZ  = padFrontZ + padDimensions.z;
-
-                if (   ballPosition.x < padLeftX
-                    || ballPosition.x > padRightX
-                    || ballPosition.z < padFrontZ
-                    || ballPosition.z > padBackZ
-                ) {
-                    hasLost = true;
-                    if (options.enableMusic) {
-                        sound->stop();
-                        delete sound;
-                    }
-                }
-            }
-        }
+    if(!mouseLeftPressed && !mouseRightPressed){
+        rootNode->rotation.y += 0.15 * timeDelta;
     }
 
-    glm::mat4 projection = glm::perspective(glm::radians(80.0f), float(windowWidth) / float(windowHeight), 0.1f, 350.f);
-
-    glm::vec3 cameraPosition = glm::vec3(0, 2, -20);
-
-    // Some math to make the camera move in a nice way
-    float lookRotation = -0.6 / (1 + exp(-5 * (padPositionX-0.5))) + 0.3;
-    glm::mat4 cameraTransform =
-                    glm::rotate(0.3f + 0.2f * float(-padPositionZ*padPositionZ), glm::vec3(1, 0, 0)) *
-                    glm::rotate(lookRotation, glm::vec3(0, 1, 0)) *
-                    glm::translate(-cameraPosition);
-
-    glm::mat4 VP = projection * cameraTransform;
-
-    // Move and rotate various SceneNodes
-    boxNode->position = { 0, -10, -80 };
-
-    ballNode->position = ballPosition;
-    ballNode->scale = glm::vec3(ballRadius);
-    ballNode->rotation = { 0, totalElapsedTime*2, 0 };
-
-    padNode->position  = {
-        boxNode->position.x - (boxDimensions.x/2) + (padDimensions.x/2) + (1 - padPositionX) * (boxDimensions.x - padDimensions.x),
-        boxNode->position.y - (boxDimensions.y/2) + (padDimensions.y/2),
-        boxNode->position.z - (boxDimensions.z/2) + (padDimensions.z/2) + (1 - padPositionZ) * (boxDimensions.z - padDimensions.z)
-    };
-
-    updateNodeTransformations(rootNode, VP);
-
-
-
-
+    projection = glm::perspective(glm::radians(60.0f), float(width) / float(height), nearPlane, farPlane);
+    updateNodeTransformations(cameraNode, glm::mat4(1.0f));
 }
 
 void updateNodeTransformations(SceneNode* node, glm::mat4 transformationThusFar) {
@@ -351,42 +456,97 @@ void updateNodeTransformations(SceneNode* node, glm::mat4 transformationThusFar)
             * glm::scale(node->scale)
             * glm::translate(-node->referencePoint);
 
-    node->currentTransformationMatrix = transformationThusFar * transformationMatrix;
+    node->currentM = transformationThusFar * transformationMatrix;
+    node->currentMV = node->currentM;
 
-    switch(node->nodeType) {
-        case GEOMETRY: break;
-        case POINT_LIGHT: break;
-        case SPOT_LIGHT: break;
+    if (node->vertexArrayObjectID != -1){
+        node->currentTransInvM = glm::transpose(glm::inverse(glm::mat3(node->currentMV)));
     }
 
     for(SceneNode* child : node->children) {
-        updateNodeTransformations(child, node->currentTransformationMatrix);
+        updateNodeTransformations(child, node->currentM);
     }
 }
 
-void renderNode(SceneNode* node) {
-    glUniformMatrix4fv(3, 1, GL_FALSE, glm::value_ptr(node->currentTransformationMatrix));
+void renderNode(SceneNode* node, bool depth) {
+    if (!node->active || (node->nodeType == WATER && depth)) return;
 
-    switch(node->nodeType) {
-        case GEOMETRY:
-            if(node->vertexArrayObjectID != -1) {
-                glBindVertexArray(node->vertexArrayObjectID);
-                glDrawElements(GL_TRIANGLES, node->VAOIndexCount, GL_UNSIGNED_INT, nullptr);
+    if (node->vertexArrayObjectID != -1){
+        glUniform1f(isWater_pos, node->nodeType == WATER ? true : false);
+
+        if (depth){
+            glUniformMatrix4fv(proj_depth_pos, 1, GL_FALSE, glm::value_ptr(projection * node->currentMV));
+        }else{
+            glUniformMatrix4fv(mv_pos, 1, GL_FALSE, glm::value_ptr(node->currentMV));
+            glUniformMatrix3fv(norm_pos, 1, GL_FALSE, glm::value_ptr(node->currentTransInvM));
+
+            glUniform3fv(mainColor_pos, 1, glm::value_ptr(node->material.mainColor));
+            if (node->nodeType == WATER){
+                glUniform3fv(secondaryColor_pos, 1, glm::value_ptr(node->material.secondaryColor));
             }
-            break;
-        case POINT_LIGHT: break;
-        case SPOT_LIGHT: break;
-    }
+            glUniform1f(textureID_pos, node->material.textureID);
+        }
 
-    for(SceneNode* child : node->children) {
-        renderNode(child);
+        glBindVertexArray(node->vertexArrayObjectID);
+        glDrawElements(GL_TRIANGLES, node->VAOIndexCount, GL_UNSIGNED_INT, nullptr);
     }
+ 
+    for(SceneNode* child : node->children) {
+        renderNode(child, depth);
+    }
+}
+
+void renderDepth(int width, int height){
+    depthShader->activate();
+    glBindFramebuffer(GL_FRAMEBUFFER, ssaoFramebufferID);
+    glViewport(0, 0, width, height);
+
+    glEnable(GL_DEPTH_TEST);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    
+    renderNode(rootNode, true);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void renderScene(int width, int height){
+    shader->activate();
+    glViewport(0, 0, width, height);
+    glEnable(GL_DEPTH_TEST);
+
+    glm::vec4 rootPos = cameraNode->currentMV * glm::vec4(rootNode->position, 1);
+    glm::vec4 lightPos = rootNode->currentMV * glm::vec4(lightNode->position, 1);
+    glm::vec3 ld = glm::normalize(glm::vec3(lightPos - rootPos));
+    
+    glUniform3fv(ldir_pos, 1, glm::value_ptr(ld));
+    glUniform1f(time_pos, totalElapsedTime);
+
+    glUniformMatrix4fv(proj_pos, 1, GL_FALSE, glm::value_ptr(projection));
+
+    glBindTexture(GL_TEXTURE_2D, ssaoDepthTextureID);
+    glUniform1i(depthTexture_pos, 0);
+    glUniform1f(width_pos, width);
+    glUniform1f(height_pos, height);
+    
+    glUniform1f(animateWater_pos, animateWater);
+    glUniform1f(notRenderDepth_pos, notRenderDepth);
+    glUniform1f(distortion_pos, distortion);
+    glUniform1f(notDistortAboveObjects_pos, notDistortAboveObjects);
+    glUniform1f(waterDepth_pos, waterDepth);
+    glUniform1f(posterizeWater_pos, posterizeWater);
+    glUniform1f(foam_pos, foam);
+    glUniform1f(waterSpec_pos, waterSpec);
+    glUniform1f(colorWaveHeight_pos, colorWaveHeight);
+    glUniform1f(smoothDiff_pos, smoothDiff);
+    glUniform1f(specular_pos, specular);
+    glUniform1f(rim_pos, rim);
+
+    renderNode(rootNode, false);
 }
 
 void renderFrame(GLFWwindow* window) {
-    int windowWidth, windowHeight;
-    glfwGetWindowSize(window, &windowWidth, &windowHeight);
-    glViewport(0, 0, windowWidth, windowHeight);
-
-    renderNode(rootNode);
+    int width, height;
+    glfwGetWindowSize(window, &width, &height);
+    renderDepth(width, height);
+    renderScene(width, height);
 }

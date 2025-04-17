@@ -1,31 +1,24 @@
-# TDT4230 - Graphics and Visualization
+# Toon Water Shader – OpenGL Project
 
-This is the base code for the NTNU subject TDT4230 assignments. It may also be used for the final project, which we will showcase [here](https://www.idi.ntnu.no/grupper/vis/teaching/)
+A stylized toon water shader implemented in OpenGL, originally developed as part of the course TDT4230 Graphics and Visualization at NTNU (Norwegian University of Science and Technology).
 
-## What do i do?
+## Features
 
-	git clone --recursive https://github.com/bartvbl/TDT4230-Assignment-1.git
+- **Toon Water Shader**: Step-wise depth coloring, refraction, light reflection, water surface distortion, foam and ripples, and vertex displacement animations.  
+  ![Toon Water Shader Preview](./toon-shader-water.gif)
 
-Should you forget the `--recursive` bit, just run:
+- **Toon Shader**: Step-wise lighting (diffuse, specular), rim outline effects.  
+  ![Toon Shader Preview](./toon-shader.gif)
 
-	git submodule update --init
+## Controls
 
+- **Rotate Camera**: Hold Left or Right Mouse Button and move the mouse  
+- **Switch Scenes**: Left / Right Arrow Keys  
+- **Toggle Shader Features**: Up / Down Arrow Keys
 
-### Windows
+## Getting Started
 
-Install Microsoft Visual Studio Express and CMake.
-You may use CMake-gui or the command-line cmake to generate a Visual Studio solution.
-
-### Linux:
-
-Make sure you have a C/C++ compiler such as  GCC, CMake and Git.
-
-	make run
-
-which is equivalent to
-
-	git submodule update --init
-	cd build
-	cmake ..
-	make
-	./glowbox
+```bash
+git clone --recursive https://github.com/Sternfruchtschnuppe/toon-water-shader-opengl.git
+cd toon-water-shader
+make run
